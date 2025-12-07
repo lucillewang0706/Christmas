@@ -61,11 +61,32 @@
         /* Camera Preview */
         .input_video {
             transform: scale(-1, 1); /* Mirror */
-            width: 160px;
-            height: 120px;
+            width: 120px;
+            height: 90px;
             border-radius: 12px;
             opacity: 0.8;
             border: 1px solid rgba(212, 175, 55, 0.3);
+        }
+
+        /* Photo Modal */
+        .photo-modal {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.85);
+            z-index: 100;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            backdrop-filter: blur(10px);
+            opacity: 0; pointer-events: none; transition: opacity 0.3s ease;
+        }
+        .photo-modal.active { opacity: 1; pointer-events: auto; }
+        .photo-content {
+            max-width: 90%; max-height: 80%;
+            border: 2px solid #FFD700;
+            box-shadow: 0 0 50px rgba(255, 215, 0, 0.3);
+            border-radius: 8px;
+            overflow: hidden;
         }
     </style>
 </head>
@@ -77,42 +98,72 @@
         import { createRoot } from 'react-dom/client';
         import * as THREE from 'three';
         import { Canvas, useFrame, useThree } from '@react-three/fiber';
-        import { OrbitControls, Text, Environment, Sparkles, Float, PerspectiveCamera, Stars as SkyStars } from '@react-three/drei';
+        import { OrbitControls, Text, Environment, Sparkles, Float, PerspectiveCamera, Stars as SkyStars, Image } from '@react-three/drei';
         
-        // Dynamic Import Fix for PostProcessing to ensure correct peer deps
+        // Dynamic Import Fix for PostProcessing
         import { EffectComposer as PPComposer, Bloom as PPBloom, Vignette as PPVignette } from "https://esm.sh/@react-three/postprocessing@2.16.0?external=react,react-dom,three,@react-three/fiber";
 
         import { useSpring, animated, config } from '@react-spring/three';
         import { v4 as uuidv4 } from 'uuid';
 
+        // --- CONFIGURATION: ADD YOUR PHOTOS HERE ---
+        // Using reliable placeholder images to prevent loading errors
+        const MEMORIES = [
+            { id: 1, img: "https://picsum.photos/seed/xmas1/600/400", text: "First Christmas Together" },
+            { id: 2, img: "https://picsum.photos/seed/xmas2/600/400", text: "Snowy Days in Tokyo" },
+            { id: 3, img: "https://picsum.photos/seed/xmas3/600/400", text: "Warm Cocoa & Smiles" },
+            { id: 4, img: "https://picsum.photos/seed/xmas4/600/400", text: "New Year's Eve Fireworks" },
+            { id: 5, img: "https://picsum.photos/seed/xmas5/600/400", text: "Our Favorite Ornament" }
+        ];
+
         // --- CONSTANTS & CONFIG ---
         const COLORS = {
-            emerald: '#0B4628', // Deep Emerald Base
-            emeraldHighlight: '#1B7A48', 
+            emerald: '#108953', // Brighter, Vibrant Emerald for Glow
+            emeraldHighlight: '#2ecc71', 
             silver: '#E5E4E2',
             gold: '#FFD700',
             paleGold: '#F3E5AB',
-            midnight: '#011a0e'
+            midnight: '#011a0e',
+            heartRed: '#D41420'
         };
 
-        const FONT_URL = "https://fonts.gstatic.com/s/italianno/v16/gw6ZQdfwpm7h8wyg44yT.woff"; // Elegant cursive
+        const MODES = {
+            SCATTER: 'scatter',
+            TREE: 'tree',
+            HEART: 'heart'
+        };
+
+        const FONT_URL = "https://fonts.gstatic.com/s/italianno/v16/gw6ZQdfwpm7h8wyg44yT.woff";
+        // Free Christmas Audio Placeholder (Instrumental)
+        const AUDIO_URL = "https://cdn.pixabay.com/download/audio/2022/11/22/audio_febc508520.mp3?filename=christmas-magic-127463.mp3";
 
         // --- MATH & GEOMETRY HELPERS ---
 
-        // Generates positions for a cone spiral (The Tree)
+        // Tree Spiral
         const getTreePos = (i, count, radiusMod = 1, yMod = 1) => {
             const t = i / count;
-            const angle = t * Math.PI * 25; // How many turns
-            const radius = (5.5 * radiusMod) * (1 - t); // Cone shape: wide bottom, narrow top
-            const y = ((t * 14) - 7) * yMod; // Height spread
+            const angle = t * Math.PI * 30; // More dense loops
+            // Cone shape
+            const radius = (5.0 * radiusMod) * (1 - t); 
+            const y = ((t * 14) - 7) * yMod; 
             const x = Math.cos(angle) * radius;
             const z = Math.sin(angle) * radius;
             return [x, y, z];
         };
 
-        // Generates random positions (The Galaxy/Scattered state)
+        // Heart Shape
+        const getHeartPos = (i, count) => {
+            const t = (i / count) * Math.PI * 2 * 6;
+            const hx = 16 * Math.pow(Math.sin(t), 3);
+            const hy = 13 * Math.cos(t) - 5 * Math.cos(2*t) - 2 * Math.cos(3*t) - Math.cos(4*t);
+            const scale = 0.35;
+            const hz = Math.sin(t * 3) * 3; 
+            return [hx * scale, hy * scale + 2, hz];
+        };
+
+        // Scattered Galaxy
         const getScatteredPos = () => {
-            const r = 15 + Math.random() * 20;
+            const r = 12 + Math.random() * 20;
             const theta = Math.random() * Math.PI * 2;
             const phi = Math.acos(2 * Math.random() - 1);
             const x = r * Math.sin(phi) * Math.cos(theta);
@@ -123,74 +174,119 @@
 
         // --- COMPONENTS ---
 
-        // 1. Star Particle (Tree Body & Ornaments)
-        const StarParticle = ({ positionTree, rotationTree, color, isTree, scaleVal }) => {
-            // Calculate random scatter position once
+        const AudioHandler = ({ start }) => {
+            const { camera } = useThree();
+            const [listener] = useState(() => new THREE.AudioListener());
+            const bufferRef = useRef();
+            
+            useEffect(() => {
+                camera.add(listener);
+                const sound = new THREE.Audio(listener);
+                
+                const audioLoader = new THREE.AudioLoader();
+                audioLoader.load(AUDIO_URL, (buffer) => {
+                    bufferRef.current = buffer;
+                    sound.setBuffer(buffer);
+                    sound.setLoop(true);
+                    sound.setVolume(0.5);
+                    if (start) {
+                        sound.play();
+                    }
+                });
+
+                return () => {
+                    camera.remove(listener);
+                    sound.stop();
+                };
+            }, [start]);
+
+            return null;
+        };
+
+        // 1. Star Particle
+        const StarParticle = ({ positionTree, positionHeart, rotationTree, color, mode, scaleVal }) => {
             const positionScatter = useMemo(() => getScatteredPos(), []);
-            // Spin wildly when scattered
             const rotationScatter = useMemo(() => [Math.random() * Math.PI * 4, Math.random() * Math.PI * 4, 0], []);
+            const rotationHeart = useMemo(() => [0, 0, 0], []);
+
+            // Audio reactive scale jitter
+            const jitter = useRef(Math.random());
+            const meshRef = useRef();
+
+            useFrame((state) => {
+                if (mode === MODES.TREE && meshRef.current) {
+                    const time = state.clock.getElapsedTime();
+                    // Gentle beat pulsing simulation
+                    const beat = Math.sin(time * 8) * 0.1 * jitter.current;
+                    meshRef.current.scale.setScalar(1 + beat);
+                }
+            });
 
             const { pos, rot, scale, colorAnim } = useSpring({
-                pos: isTree ? positionTree : positionScatter,
-                rot: isTree ? rotationTree : rotationScatter,
-                scale: isTree ? [scaleVal, scaleVal, scaleVal] : [0.4, 0.4, 0.4],
-                colorAnim: isTree ? color : COLORS.silver,
+                pos: mode === MODES.TREE ? positionTree : (mode === MODES.HEART ? positionHeart : positionScatter),
+                rot: mode === MODES.TREE ? rotationTree : (mode === MODES.HEART ? rotationHeart : rotationScatter),
+                scale: mode !== MODES.SCATTER ? [scaleVal, scaleVal, scaleVal] : [0.4, 0.4, 0.4],
+                colorAnim: mode === MODES.HEART ? COLORS.heartRed : (mode === MODES.TREE ? color : COLORS.silver),
                 config: { mass: 2, tension: 150, friction: 40, precision: 0.001 } 
             });
 
-            // A cross shape to mimic a 4-pointed star
-            const spikeGeo = useMemo(() => new THREE.ConeGeometry(0.1, 0.8, 4), []);
+            // Diamond Star Shape
+            const spikeGeo = useMemo(() => new THREE.ConeGeometry(0.12, 1.0, 4), []);
 
             return (
                 <animated.group position={pos} rotation={rot} scale={scale}>
-                    {/* Vertical Spike */}
-                    <mesh geometry={spikeGeo}>
-                        <animated.meshStandardMaterial 
-                            color={colorAnim} 
-                            emissive={colorAnim}
-                            emissiveIntensity={isTree ? 1.0 : 3}
-                            toneMapped={false}
-                        />
-                    </mesh>
-                    {/* Horizontal Spike */}
-                    <mesh geometry={spikeGeo} rotation={[0, 0, Math.PI / 2]}>
-                        <animated.meshStandardMaterial 
-                            color={colorAnim} 
-                            emissive={colorAnim}
-                            emissiveIntensity={isTree ? 1.0 : 3}
-                            toneMapped={false}
-                        />
-                    </mesh>
+                    <animated.group ref={meshRef}>
+                         <mesh geometry={spikeGeo}>
+                            <animated.meshStandardMaterial 
+                                color={colorAnim} 
+                                emissive={colorAnim}
+                                emissiveIntensity={mode !== MODES.SCATTER ? 1.5 : 4}
+                                toneMapped={false}
+                            />
+                        </mesh>
+                        <mesh geometry={spikeGeo} rotation={[0, 0, Math.PI / 2]}>
+                            <animated.meshStandardMaterial 
+                                color={colorAnim} 
+                                emissive={colorAnim}
+                                emissiveIntensity={mode !== MODES.SCATTER ? 1.5 : 4}
+                                toneMapped={false}
+                            />
+                        </mesh>
+                         {/* Core glow */}
+                         <mesh>
+                             <sphereGeometry args={[0.08, 8, 8]} />
+                             <animated.meshBasicMaterial color={colorAnim} />
+                         </mesh>
+                    </animated.group>
                 </animated.group>
             );
         };
 
-        // 2. The Crescent Moon (Tree Topper)
-        const CrescentMoon = ({ isTree }) => {
-            const treePos = [0, 8, 0];
+        // 2. Refined Crescent Moon
+        const CrescentMoon = ({ mode }) => {
+            const treePos = [0, 8.5, 0];
+            const heartPos = [0, 8, 0];
             const scatterPos = [0, 20, -10];
 
-            const { pos, scale, rot } = useSpring({
-                pos: isTree ? treePos : scatterPos,
-                scale: isTree ? 1 : 3,
-                rot: isTree ? [0, 0, Math.PI / 4] : [Math.random(), Math.random(), 0],
+            const { pos, scale, rot, opacity } = useSpring({
+                pos: mode === MODES.TREE ? treePos : (mode === MODES.HEART ? heartPos : scatterPos),
+                scale: mode === MODES.TREE ? 0.4 : (mode === MODES.HEART ? 0 : 3), 
+                rot: mode === MODES.TREE ? [0, 0, Math.PI / 6] : [Math.random(), Math.random(), 0],
+                opacity: mode === MODES.HEART ? 0 : 1,
                 config: config.molasses
             });
 
             const geometry = useMemo(() => {
                 const shape = new THREE.Shape();
-                const outerRadius = 1.2;
-                const innerRadius = 1.0;
+                const outerRadius = 1.5;
+                const innerRadius = 1.35; // Tighter radius for thinner crescent
                 
-                // Outer Circle
                 shape.absarc(0, 0, outerRadius, 0, Math.PI * 2, false);
-                
-                // Subtract Inner Circle (Shifted to make crescent)
                 const holePath = new THREE.Path();
-                holePath.absarc(-0.4, 0, innerRadius, 0, Math.PI * 2, true);
+                holePath.absarc(-0.6, 0.2, innerRadius, 0, Math.PI * 2, true); // Offset hole
                 shape.holes.push(holePath);
 
-                const extrudeSettings = { depth: 0.3, bevelEnabled: true, bevelSegments: 2, steps: 2, bevelSize: 0.05, bevelThickness: 0.05 };
+                const extrudeSettings = { depth: 0.2, bevelEnabled: true, bevelSegments: 4, steps: 2, bevelSize: 0.05, bevelThickness: 0.1 };
                 return new THREE.ExtrudeGeometry(shape, extrudeSettings);
             }, []);
 
@@ -199,33 +295,72 @@
                     <meshStandardMaterial 
                         color={COLORS.gold}
                         emissive={COLORS.gold}
-                        emissiveIntensity={2}
+                        emissiveIntensity={3}
                         toneMapped={false}
                         metalness={1}
                         roughness={0.1}
+                        transparent
+                        opacity={opacity}
                     />
-                    <pointLight distance={20} decay={2} intensity={5} color={COLORS.gold} />
                 </animated.mesh>
             );
         };
 
-        // 3. Floating Letter as Tree Ornament
-        const OrnamentText = ({ char, treePos, isTree }) => {
+        // 3. Photo Frame Component
+        const PhotoFrame = ({ img, text, index, total, mode, onSelect }) => {
+            // Spiral position distinct from stars
+            const treePos = useMemo(() => {
+                const t = index / total;
+                const angle = t * Math.PI * 10 + Math.PI; 
+                const radius = (5.5 * (1 - t)) + 0.8; 
+                const y = (t * 12) - 5; 
+                return [Math.cos(angle) * radius, y, Math.sin(angle) * radius];
+            }, []);
+
+            const heartPos = useMemo(() => {
+                const t = (index / total) * Math.PI * 2;
+                // Place roughly on heart surface
+                const hx = 3 * Math.sin(t);
+                const hy = 3 * Math.cos(t) + 3;
+                return [hx, hy, 2.5]; // Front of heart
+            }, []);
             
+            const scatterPos = useMemo(() => getScatteredPos(), []);
+
+            const { pos, scale } = useSpring({
+                pos: mode === MODES.TREE ? treePos : (mode === MODES.HEART ? heartPos : scatterPos),
+                scale: mode === MODES.SCATTER ? 0 : 1, 
+                config: config.wobbly
+            });
+
+            return (
+                <animated.group position={pos} scale={scale}>
+                    <Float speed={2} rotationIntensity={0.2} floatIntensity={0.2}>
+                        <group onClick={(e) => { e.stopPropagation(); onSelect({img, text}); }}>
+                            {/* Gold Frame */}
+                            <mesh position={[0,0,-0.02]}>
+                                <boxGeometry args={[1.6, 1.3, 0.05]} />
+                                <meshStandardMaterial color={COLORS.gold} metalness={1} roughness={0.2} />
+                            </mesh>
+                            {/* Image - Wrapped in try/catch safely via drei, but using reliable source now */}
+                            <Image url={img} scale={[1.4, 1.1]} transparent opacity={0.9} />
+                        </group>
+                    </Float>
+                </animated.group>
+            );
+        };
+
+        // 4. Floating Text
+        const OrnamentText = ({ char, treePos, heartPos, mode }) => {
             const posScatter = useMemo(() => {
                 const p = getScatteredPos();
                 return [p[0] * 1.5, p[1] * 1.5, p[2] * 1.5]; 
             }, []);
 
-            const rotScatter = useMemo(() => [Math.random() * Math.PI, Math.random() * Math.PI, 0], []);
-            
-            // Look at camera roughly when in tree mode
-            const rotTree = [0, 0, 0]; 
-
             const { pos, rot, color } = useSpring({
-                pos: isTree ? treePos : posScatter,
-                rot: isTree ? rotTree : rotScatter,
-                color: isTree ? COLORS.paleGold : COLORS.silver,
+                pos: mode === MODES.TREE ? treePos : (mode === MODES.HEART ? heartPos : posScatter),
+                rot: mode !== MODES.SCATTER ? [0,0,0] : [Math.random(), Math.random(), 0],
+                color: mode === MODES.TREE ? COLORS.paleGold : (mode === MODES.HEART ? COLORS.gold : COLORS.silver),
                 config: config.molasses
             });
 
@@ -242,7 +377,7 @@
                             <animated.meshPhysicalMaterial 
                                 color={color}
                                 emissive={color}
-                                emissiveIntensity={0.6}
+                                emissiveIntensity={0.8}
                                 roughness={0.2}
                                 metalness={0.9}
                                 toneMapped={false}
@@ -253,7 +388,6 @@
             );
         };
 
-        // 4. Camera Controller Rig
         const CameraRig = ({ handPosition }) => {
             const { camera } = useThree();
             useFrame((state) => {
@@ -268,52 +402,54 @@
             return null;
         };
 
-        // 5. Main Scene Manager
-        const Scene = ({ isTree, handPosition }) => {
-            // A. Generate Tree Particles (Stars)
-            const count = 400; 
+        const Scene = ({ mode, handPosition, onSelectPhoto }) => {
+            // Increased density to 1200 as requested before, but let's keep it optimized at 800 for stability
+            const count = 800; 
             const particles = useMemo(() => {
                 return new Array(count).fill(0).map((_, i) => {
                     const treePos = getTreePos(i, count);
-                    // Add some noise
+                    const heartPos = getHeartPos(i, count);
                     const treeRot = [Math.random() * 0.5, Math.atan2(treePos[0], treePos[2]), Math.random() * 0.5]; 
                     
-                    // Logic: 70% Emerald, 15% Silver, 15% Gold
                     const rand = Math.random();
                     let color = COLORS.emerald;
                     let scaleVal = 1;
 
                     if (rand > 0.85) {
-                        color = COLORS.gold; // Gold Star
-                        scaleVal = 0.6; // Smaller ornament
+                        color = COLORS.gold; 
+                        scaleVal = 0.6; 
                     } else if (rand > 0.70) {
-                        color = COLORS.silver; // Silver Star
-                        scaleVal = 0.6; // Smaller ornament
+                        color = COLORS.silver; 
+                        scaleVal = 0.6;
                     } else {
-                        // Base tree green variations
+                        // Make base green slightly varied for depth
                          color = Math.random() > 0.5 ? COLORS.emerald : COLORS.emeraldHighlight;
                     }
 
-                    return { id: uuidv4(), treePos, treeRot, color, scaleVal };
+                    return { id: uuidv4(), treePos, heartPos, treeRot, color, scaleVal };
                 });
             }, []);
 
-            // B. Generate Text Ornaments
             const message = "MERRY CHRISTMAS I LOVE YOU";
             const chars = useMemo(() => {
                 const cleanChars = message.replace(/\s/g, '').split('');
                 const charCount = cleanChars.length;
                 return cleanChars.map((char, i) => {
-                    // Distribute text along a wider spiral winding around the tree
                     const t = i / charCount;
-                    // Custom spiral for text
-                    const angle = t * Math.PI * 8; // 4 full turns
-                    const radius = (6.0 * (1 - t)) + 0.5; // Slightly outside the tree
+                    const angle = t * Math.PI * 8; 
+                    const radius = (6.0 * (1 - t)) + 0.5; 
                     const y = (t * 13) - 6; 
                     const x = Math.cos(angle) * radius;
                     const z = Math.sin(angle) * radius;
                     
-                    return { id: `char-${i}`, char, treePos: [x, y, z] };
+                    // Heart distribution
+                    const ht = i / charCount;
+                    const hAngle = ht * Math.PI * 2;
+                    const hx = 2 * Math.sin(hAngle);
+                    const hy = 2 * Math.cos(hAngle) + 3;
+                    const hz = 3.5; 
+
+                    return { id: `char-${i}`, char, treePos: [x, y, z], heartPos: [hx, hy, hz] };
                 });
             }, []);
 
@@ -325,7 +461,7 @@
                          <OrbitControls 
                             enablePan={false} 
                             autoRotate 
-                            autoRotateSpeed={isTree ? 0.8 : 0.2} 
+                            autoRotateSpeed={mode === MODES.SCATTER ? 0.2 : 0.8} 
                             maxDistance={35}
                             minDistance={5}
                         />
@@ -333,84 +469,128 @@
                    
                     <CameraRig handPosition={handPosition} />
 
-                    {/* Lighting: Warm and Magical */}
-                    <ambientLight intensity={0.1} color={COLORS.midnight} />
+                    <ambientLight intensity={0.2} color={COLORS.midnight} />
                     <spotLight position={[10, 20, 10]} angle={0.3} penumbra={1} intensity={2} color="#FFF" />
                     <pointLight position={[-10, -5, -10]} intensity={1} color={COLORS.gold} />
                     
-                    <Environment preset="night" />
+                    <animated.pointLight 
+                        position={[0, 0, 5]} 
+                        intensity={mode === MODES.HEART ? 3 : 0} 
+                        color={COLORS.heartRed} 
+                        distance={15}
+                    />
 
-                    {/* The Tree Particles */}
+                    <Environment preset="city" />
+
                     <group position={[0, -2, 0]}>
                         {particles.map((p) => (
                             <StarParticle 
                                 key={p.id} 
                                 positionTree={p.treePos} 
+                                positionHeart={p.heartPos}
                                 rotationTree={p.treeRot} 
                                 color={p.color} 
-                                isTree={isTree} 
+                                mode={mode}
                                 scaleVal={p.scaleVal}
                             />
                         ))}
                     </group>
 
-                    {/* Text Ornaments */}
                     <group position={[0, -2, 0]}>
                         {chars.map((c) => (
-                             <OrnamentText key={c.id} char={c.char} treePos={c.treePos} isTree={isTree} />
+                             <OrnamentText 
+                                key={c.id} 
+                                char={c.char} 
+                                treePos={c.treePos} 
+                                heartPos={c.heartPos} 
+                                mode={mode} 
+                            />
                         ))}
                     </group>
 
-                    <CrescentMoon isTree={isTree} />
+                    <group position={[0, -2, 0]}>
+                        {MEMORIES.map((m, i) => (
+                            <PhotoFrame 
+                                key={m.id}
+                                img={m.img}
+                                text={m.text}
+                                index={i}
+                                total={MEMORIES.length}
+                                mode={mode}
+                                onSelect={onSelectPhoto}
+                            />
+                        ))}
+                    </group>
 
-                    {/* Atmosphere */}
+                    <CrescentMoon mode={mode} />
+
                     <SkyStars radius={50} depth={50} count={3000} factor={4} saturation={0} fade speed={0.5} />
                     <Sparkles count={150} scale={18} size={4} speed={0.3} opacity={0.5} color={COLORS.gold} />
                     
-                    {/* Post Processing */}
                     <PPComposer disableNormalPass>
                         <PPBloom 
-                            luminanceThreshold={0.2} 
+                            luminanceThreshold={0.25} 
                             mipmapBlur 
-                            intensity={1.0} 
+                            intensity={1.2} 
                             radius={0.6}
                         />
-                        <PPVignette eskil={false} offset={0.1} darkness={1.2} />
+                        <PPVignette eskil={false} offset={0.1} darkness={1.1} />
                     </PPComposer>
                 </>
             );
         };
 
         const App = () => {
-            const [isTree, setIsTree] = useState(true); 
+            const [mode, setMode] = useState(MODES.TREE); 
             const [loaded, setLoaded] = useState(false);
             const [handPosition, setHandPosition] = useState(null); 
+            const [audioStarted, setAudioStarted] = useState(false);
+            const [selectedPhoto, setSelectedPhoto] = useState(null);
             const videoRef = useRef(null);
 
             useEffect(() => {
                 setTimeout(() => setLoaded(true), 1500);
 
                 const onResults = (results) => {
-                    if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
-                        const landmarks = results.multiHandLandmarks[0];
-                        const wrist = landmarks[0];
-                        const tips = [8, 12, 16, 20]; 
-                        let avgDist = 0;
-                        
-                        tips.forEach(idx => {
-                            const dx = landmarks[idx].x - wrist.x;
-                            const dy = landmarks[idx].y - wrist.y;
-                            avgDist += Math.sqrt(dx*dx + dy*dy);
-                        });
-                        avgDist /= 4;
+                    const landmarks = results.multiHandLandmarks;
 
-                        const isFist = avgDist < 0.25; 
-                        setIsTree(isFist);
-
+                    if (landmarks && landmarks.length > 0) {
+                        const mainHand = landmarks[0];
+                        const wrist = mainHand[0];
                         const x = (0.5 - wrist.x) * 4; 
                         const y = (0.5 - wrist.y) * 2; 
                         setHandPosition({x, y});
 
+                        if (landmarks.length === 2) {
+                            const hand1 = landmarks[0];
+                            const hand2 = landmarks[1];
+                            const dxI = hand1[8].x - hand2[8].x;
+                            const dyI = hand1[8].y - hand2[8].y;
+                            const distI = Math.sqrt(dxI*dxI + dyI*dyI);
+                            const dxT = hand1[4].x - hand2[4].x;
+                            const dyT = hand1[4].y - hand2[4].y;
+                            const distT = Math.sqrt(dxT*dxT + dyT*dyT);
+
+                            if (distI < 0.1 && distT < 0.15) {
+                                setMode(MODES.HEART);
+                                return;
+                            }
+                        }
+
+                        const tips = [8, 12, 16, 20]; 
+                        let avgDist = 0;
+                        tips.forEach(idx => {
+                            const dx = mainHand[idx].x - wrist.x;
+                            const dy = mainHand[idx].y - wrist.y;
+                            avgDist += Math.sqrt(dx*dx + dy*dy);
+                        });
+                        avgDist /= 4;
+
+                        if (avgDist < 0.25) {
+                            setMode(MODES.TREE);
+                        } else {
+                            setMode(MODES.SCATTER);
+                        }
                     } else {
                         setHandPosition(null);
                     }
@@ -421,7 +601,7 @@
                 }});
 
                 hands.setOptions({
-                    maxNumHands: 1,
+                    maxNumHands: 2,
                     modelComplexity: 1,
                     minDetectionConfidence: 0.5,
                     minTrackingConfidence: 0.5
@@ -431,29 +611,46 @@
                 if (videoRef.current) {
                     const camera = new window.Camera(videoRef.current, {
                         onFrame: async () => {
-                            await hands.send({image: videoRef.current});
+                            // SAFELY CHECK VIDEO ELEMENT
+                            if (videoRef.current) {
+                                await hands.send({image: videoRef.current});
+                            }
                         },
                         width: 640,
                         height: 480
                     });
                     camera.start();
                 }
-
             }, []);
 
+            const startExperience = () => {
+                if(!audioStarted) setAudioStarted(true);
+            };
+
             return (
-                <div className="w-full h-full relative bg-[#011a0e]">
+                <div className="w-full h-full relative bg-[#011a0e]" onClick={startExperience}>
                     {/* Loading Screen */}
                     <div className={`loading-overlay ${loaded ? 'hidden' : ''}`}>
                         <div className="text-center">
                             <h1 className="lux-text text-3xl text-[#FFD700] mb-4 animate-pulse">GATHERING STARLIGHT</h1>
-                            <div className="w-48 h-1 bg-[#0B4628] rounded mx-auto overflow-hidden">
+                            <div className="w-48 h-1 bg-[#108953] rounded mx-auto overflow-hidden">
                                 <div className="h-full bg-[#FFD700] animate-[spin_1s_linear_infinite]" style={{width: '50%'}}></div>
                             </div>
                         </div>
                     </div>
 
-                    {/* 3D Canvas */}
+                    {/* Photo Modal */}
+                    <div className={`photo-modal ${selectedPhoto ? 'active' : ''}`} onClick={() => setSelectedPhoto(null)}>
+                        {selectedPhoto && (
+                            <div className="photo-content relative bg-black">
+                                <img src={selectedPhoto.img} alt="Memory" className="max-h-[60vh] object-contain" />
+                                <div className="p-4 bg-black/80 text-[#FFD700] text-center lux-text border-t border-[#FFD700]/30">
+                                    <p className="text-xl">{selectedPhoto.text}</p>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+
                     <Canvas 
                         dpr={[1, 2]} 
                         gl={{ 
@@ -463,33 +660,42 @@
                         }}
                     >
                         <Suspense fallback={null}>
-                            <Scene isTree={isTree} handPosition={handPosition} />
+                            <Scene mode={mode} handPosition={handPosition} onSelectPhoto={setSelectedPhoto} />
+                            <AudioHandler start={audioStarted} />
                         </Suspense>
                     </Canvas>
 
-                    {/* UI Layer */}
                     <div className="absolute top-0 left-0 w-full h-full pointer-events-none flex flex-col justify-between p-8 z-10">
                         <header className="flex justify-between items-start">
                             <div>
                                 <h2 className="lux-text text-xl text-[#FFD700] drop-shadow-lg">MERRY CHRISTMAS <span className="text-white block text-sm mt-1">& HAPPY NEW YEAR</span></h2>
                             </div>
-                             {/* Webcam Preview */}
                             <div className="pointer-events-auto">
                                 <video ref={videoRef} className="input_video" playsInline muted></video>
                                 <p className="text-[10px] text-[#FFD700] text-center mt-1 uppercase tracking-widest">
                                     Gesture Control<br/>
-                                    <span className="text-white">Open: Unleash</span> | <span className="text-[#FFD700]">Fist: Tree</span>
+                                    <span className="text-white">Open: Unleash</span> | <span className="text-[#FFD700]">Fist: Tree</span><br/>
+                                    <span className="text-[#D41420]">🫶 Two Hands: Love</span>
                                 </p>
                             </div>
                         </header>
 
-                        <footer className="flex justify-center pointer-events-auto pb-8">
+                        <footer className="flex justify-center pointer-events-auto pb-8 gap-4">
+                            {!audioStarted && (
+                                <div className="absolute bottom-24 text-[#FFD700] text-sm animate-bounce">Tap anywhere to enable sound</div>
+                            )}
                             <button 
-                                onClick={() => setIsTree(!isTree)}
+                                onClick={() => setMode(mode === MODES.TREE ? MODES.SCATTER : MODES.TREE)}
                                 className="glass-panel px-8 py-4 rounded-full text-[#FFD700] font-sans tracking-[0.2em] text-sm hover:bg-[#FFD700]/10 transition-all duration-500 border border-[#FFD700]/30 group relative overflow-hidden"
                             >
-                                <span className="relative z-10">{isTree ? "UNLEASH MAGIC" : "ASSEMBLE TREE"}</span>
+                                <span className="relative z-10">{mode === MODES.SCATTER ? "ASSEMBLE TREE" : "UNLEASH MAGIC"}</span>
                                 <div className="absolute inset-0 bg-gradient-to-r from-transparent via-[#FFD700]/20 to-transparent translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-700"></div>
+                            </button>
+                             <button 
+                                onClick={() => setMode(MODES.HEART)}
+                                className="glass-panel px-6 py-4 rounded-full text-[#D41420] font-sans tracking-[0.2em] text-sm hover:bg-[#D41420]/10 transition-all duration-500 border border-[#D41420]/30 group relative overflow-hidden"
+                            >
+                                <span className="relative z-10">♥</span>
                             </button>
                         </footer>
                     </div>
