@@ -1,0 +1,7 @@
+{
+  "name": "Merry Christmas",
+  "description": "A high-fidelity 3D interactive experience featuring morphing particle systems and liquid metal typography. Designed with a luxurious midnight-ice palette and cinematic bloom effects.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
